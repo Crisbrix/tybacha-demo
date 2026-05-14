@@ -166,7 +166,7 @@
       </section>
       <main class="auth-card">
         <h1>Iniciar sesion</h1>
-        <p class="muted">Demo: admin@tybacha.local, profesional@tybacha.local o cuidador@tybacha.local. Cualquier contrasena de 4+ caracteres.</p>
+        <p class="muted">Demo: admin@tybacha.local, profesional@tybacha.local o cuidador@tybacha.local.</p>
         <form id="loginForm">
           <div class="field"><label for="email">Correo</label><input id="email" type="email" value="admin@tybacha.local" required></div>
           <div class="field"><label for="password">Contrasena</label><input id="password" type="password" value="demo1234" minlength="4" required></div>
