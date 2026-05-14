@@ -72,8 +72,11 @@
   function loadState() {
     const saved = localStorage.getItem(storageKey);
     const loaded = saved ? JSON.parse(saved) : JSON.parse(JSON.stringify(data));
-    loaded.users = loaded.users.filter((user) => user.role !== "older_adult");
-    loaded.olderAdults = loaded.olderAdults.map((adult) => ({ appAccess: "Sin acceso", ...adult }));
+    loaded.users = loaded.users
+      .filter((user) => user.role !== "older_adult")
+      .map((user) => ({ photoUrl: "", ...user }));
+    loaded.caregivers = loaded.caregivers.map((caregiver) => ({ photoUrl: "", ...caregiver }));
+    loaded.olderAdults = loaded.olderAdults.map((adult) => ({ appAccess: "Sin acceso", photoUrl: "", ...adult }));
     loaded.plans = loaded.plans.map((plan) => ({
       ...plan,
       exercises: plan.exercises.map((exercise) => ({
@@ -140,6 +143,39 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  function initials(name) {
+    return String(name || "TY")
+      .split(" ")
+      .filter(Boolean)
+      .map((part) => part[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase();
+  }
+
+  function personPhoto(src, name, extraClass = "") {
+    const safeClass = extraClass ? " " + extraClass : "";
+    if (src) {
+      return `<div class="photo${safeClass}"><img src="${escapeHtml(src)}" alt="Foto de ${escapeHtml(name)}"></div>`;
+    }
+    return `<div class="photo${safeClass}" aria-label="Iniciales de ${escapeHtml(name)}">${escapeHtml(initials(name))}</div>`;
+  }
+
+  function readPhotoFile(input) {
+    const file = input?.files?.[0];
+    if (!file) return Promise.resolve("");
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function photoField(id, label) {
+    return `<div class="field full"><label for="${id}">${label}</label><input id="${id}" type="file" accept="image/*"></div>`;
   }
 
   function toast(message) {
@@ -215,13 +251,14 @@
           <div class="field"><label for="name">Nombre completo</label><input id="name" required></div>
           <div class="field"><label for="email">Correo</label><input id="email" type="email" required></div>
           <div class="field"><label for="phone">Telefono</label><input id="phone" required></div>
+          ${photoField("photo", "Foto del profesional")}
           <div class="field"><label for="password">Contrasena</label><input id="password" type="password" minlength="8" required></div>
           <button class="button full" type="submit">Registrar profesional</button>
         </form>
         <p class="muted">Ya tienes cuenta? <a href="login.html">Iniciar sesion</a></p>
       </main>
     `;
-    document.getElementById("registerForm").addEventListener("submit", (event) => {
+    document.getElementById("registerForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const email = document.getElementById("email").value.trim().toLowerCase();
       if (state.users.some((user) => user.email.toLowerCase() === email)) {
@@ -235,6 +272,7 @@
         role: "professional",
         status: "Activo",
         phone: document.getElementById("phone").value.trim(),
+        photoUrl: await readPhotoFile(document.getElementById("photo")),
         lastLogin: "Nuevo"
       };
       state.users.push(user);
@@ -269,7 +307,7 @@
             <span class="muted">Sesion protegida con token JWT simulado y permisos por rol.</span>
           </div>
           <div class="user-chip">
-            <div class="avatar">${user.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</div>
+            ${personPhoto(user.photoUrl, user.name)}
             <div><strong>${escapeHtml(user.name)}</strong><br><span>${escapeHtml(role.name)}</span></div>
             <button class="button secondary" id="logoutButton" type="button">Salir</button>
           </div>
@@ -370,7 +408,7 @@
         toast("Ya existe un usuario con ese correo.");
         return;
       }
-      state.users.push({ id: Date.now(), name: "Nuevo profesional", email, role: "professional", status: "Activo", phone: "Pendiente", lastLogin: "Nuevo" });
+      state.users.push({ id: Date.now(), name: "Nuevo profesional", email, role: "professional", status: "Activo", phone: "Pendiente", photoUrl: "", lastLogin: "Nuevo" });
       addAudit(currentUser().name, "Creo usuario", "users", email);
       saveState();
       renderUsers();
@@ -379,8 +417,8 @@
   }
 
   function usersTable() {
-    return table(["Nombre", "Correo", "Rol", "Estado", "Ultimo acceso"], state.users.map((user) => [
-      user.name,
+    return table(["Usuario", "Correo", "Rol", "Estado", "Ultimo acceso"], state.users.map((user) => [
+      `<div class="person-row compact">${personPhoto(user.photoUrl, user.name)}<strong>${escapeHtml(user.name)}</strong></div>`,
       user.email,
       roleOf(user)?.name || user.role,
       status(user.status),
@@ -390,6 +428,7 @@
 
   function renderRoles() {
     document.getElementById("content").innerHTML = `
+      ${currentUser().role === "admin" ? roleMonitoring() : ""}
       <section class="grid two">
         ${state.roles.map((role) => `
           <article class="card">
@@ -402,15 +441,62 @@
     `;
   }
 
+  function roleMonitoring() {
+    const monitoredRoles = [
+      { id: "professional", label: "Profesionales", description: "Usuarios con gestion clinica, SFT y planes." },
+      { id: "caregiver", label: "Cuidadores", description: "Usuarios con seguimiento diario asignado." }
+    ];
+    return `
+      <section class="section">
+        <div class="section-header">
+          <div><h2>Monitoreo de roles</h2><span class="muted">Vista solo para admin sobre profesionales y cuidadores.</span></div>
+        </div>
+        <div class="grid two">
+          ${monitoredRoles.map((role) => {
+            const users = state.users.filter((user) => user.role === role.id);
+            const active = users.filter((user) => user.status === "Activo").length;
+            return `
+              <article class="card">
+                <div class="section-header"><h2>${role.label}</h2>${status(active + " activos")}</div>
+                <p class="muted">${role.description}</p>
+                <div class="toolbar">
+                  ${metricInline("Total", users.length)}
+                  ${metricInline("Inactivos", users.length - active)}
+                </div>
+                <div class="role-list">
+                  ${users.map((user) => `
+                    <div class="person-row">
+                      ${personPhoto(user.photoUrl, user.name)}
+                      <div><strong>${escapeHtml(user.name)}</strong><br><span class="muted">${escapeHtml(user.email)} | Ultimo acceso: ${escapeHtml(user.lastLogin)}</span></div>
+                    </div>
+                  `).join("") || "<p class='muted'>Sin registros.</p>"}
+                </div>
+              </article>
+            `;
+          }).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  function metricInline(label, value) {
+    return `<span class="status"><strong>${escapeHtml(value)}</strong> ${escapeHtml(label)}</span>`;
+  }
+
   function renderProfile() {
     const user = currentUser();
     document.getElementById("content").innerHTML = `
       <section class="grid two">
         <form class="card" id="profileForm">
           <h2>Informacion personal</h2>
+          <div class="person-media">
+            ${personPhoto(user.photoUrl, user.name, "large")}
+            <p class="muted">La foto se muestra en el monitoreo de roles, listados y encabezado de sesion.</p>
+          </div>
           <div class="field"><label>Nombre</label><input id="profileName" value="${escapeHtml(user.name)}" required></div>
           <div class="field"><label>Correo</label><input id="profileEmail" type="email" value="${escapeHtml(user.email)}" required></div>
           <div class="field"><label>Telefono</label><input id="profilePhone" value="${escapeHtml(user.phone)}" required></div>
+          ${photoField("profilePhoto", "Actualizar foto")}
           <button class="button" type="submit">Guardar perfil</button>
         </form>
         <article class="card">
@@ -420,11 +506,22 @@
         </article>
       </section>
     `;
-    document.getElementById("profileForm").addEventListener("submit", (event) => {
+    document.getElementById("profileForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       user.name = document.getElementById("profileName").value.trim();
       user.email = document.getElementById("profileEmail").value.trim();
       user.phone = document.getElementById("profilePhone").value.trim();
+      const photoUrl = await readPhotoFile(document.getElementById("profilePhoto"));
+      if (photoUrl) user.photoUrl = photoUrl;
+      if (user.role === "caregiver") {
+        const caregiver = state.caregivers.find((item) => item.id === user.id);
+        if (caregiver) {
+          caregiver.name = user.name;
+          caregiver.email = user.email;
+          caregiver.phone = user.phone;
+          if (photoUrl) caregiver.photoUrl = photoUrl;
+        }
+      }
       addAudit(user.name, "Actualizo perfil", "profiles", "Datos personales actualizados");
       saveState();
       toast("Perfil actualizado.");
@@ -468,8 +565,8 @@
   }
 
   function adultsTable(adults) {
-    return table(["Nombre", "Edad", "Estado", "Consentimiento", "Acceso", "Riesgo", "Cumplimiento", "Acciones"], adults.map((adult) => [
-      fullName(adult),
+    return table(["Adulto mayor", "Edad", "Estado", "Consentimiento", "Acceso", "Riesgo", "Cumplimiento", "Acciones"], adults.map((adult) => [
+      `<div class="person-row compact">${personPhoto(adult.photoUrl, fullName(adult))}<strong>${escapeHtml(fullName(adult))}</strong></div>`,
       age(adult.birthDate),
       status(adult.status),
       status(adult.consent),
@@ -494,6 +591,7 @@
   }
 
   function openAdultModal() {
+    const isCaregiver = currentUser().role === "caregiver";
     const caregivers = state.caregivers.map((caregiver) => `<option value="${caregiver.id}">${escapeHtml(caregiver.name)}</option>`).join("");
     const modal = document.createElement("div");
     modal.className = "modal-backdrop";
@@ -510,6 +608,7 @@
           <div class="form-grid">
             <div class="field"><label for="adultFirstName">Nombre</label><input id="adultFirstName" required></div>
             <div class="field"><label for="adultLastName">Apellidos</label><input id="adultLastName" required></div>
+            ${photoField("adultPhoto", "Foto del adulto mayor")}
             <div class="field"><label for="adultBirthDate">Fecha de nacimiento</label><input id="adultBirthDate" type="date" required></div>
             <div class="field">
               <label for="adultGender">Genero</label>
@@ -523,13 +622,21 @@
             <div class="field"><label for="adultPhone">Telefono</label><input id="adultPhone" required></div>
             <div class="field"><label for="adultAddress">Direccion</label><input id="adultAddress" required></div>
             <div class="field full"><label for="adultEmergency">Contacto de emergencia</label><input id="adultEmergency" placeholder="Nombre - parentesco - telefono" required></div>
-            <div class="field">
-              <label for="adultCaregiver">Cuidador asignado</label>
-              <select id="adultCaregiver">
-                <option value="">Sin asignar</option>
-                ${caregivers}
-              </select>
-            </div>
+            ${isCaregiver ? `
+              <div class="field">
+                <label>Cuidador asignado</label>
+                <input value="${escapeHtml(currentUser().name)}" disabled>
+                <span class="muted">Se asignara automaticamente a tu usuario.</span>
+              </div>
+            ` : `
+              <div class="field">
+                <label for="adultCaregiver">Cuidador asignado</label>
+                <select id="adultCaregiver">
+                  <option value="">Sin asignar</option>
+                  ${caregivers}
+                </select>
+              </div>
+            `}
             <div class="field">
               <label for="adultConsent">Consentimiento</label>
               <select id="adultConsent">
@@ -561,10 +668,13 @@
     });
   }
 
-  function createAdultFromForm(modal) {
+  async function createAdultFromForm(modal) {
     const firstName = modal.querySelector("#adultFirstName").value.trim();
     const lastName = modal.querySelector("#adultLastName").value.trim();
-    const caregiverId = Number(modal.querySelector("#adultCaregiver").value) || null;
+    const caregiverId = currentUser().role === "caregiver" ? currentUser().id : Number(modal.querySelector("#adultCaregiver")?.value) || null;
+    const professionalId = ["admin", "professional"].includes(currentUser().role)
+      ? currentUser().id
+      : state.users.find((user) => user.role === "professional" && user.status === "Activo")?.id || null;
     if (!firstName || !lastName) {
       toast("Nombre y apellidos son obligatorios.");
       return;
@@ -581,9 +691,10 @@
       status: "Activo",
       consent: modal.querySelector("#adultConsent").value,
       phone: modal.querySelector("#adultPhone").value.trim(),
+      photoUrl: await readPhotoFile(modal.querySelector("#adultPhoto")),
       address: modal.querySelector("#adultAddress").value.trim(),
       caregiverId,
-      professionalId: currentUser().id,
+      professionalId,
       appAccess: "Sin acceso",
       adherence: 0,
       risk: "Por evaluar",
@@ -609,63 +720,170 @@
 
   function renderAdultDetail() {
     const params = new URLSearchParams(window.location.search);
-    const adult = adultById(params.get("id")) || visibleAdults()[0];
-    if (!adult) {
-      document.getElementById("content").innerHTML = `<div class="empty">No hay ficha disponible para este usuario.</div>`;
+    const adults = visibleAdults();
+    if (!adults.length) {
+      document.getElementById("content").innerHTML = `<div class="empty">No hay fichas disponibles para este usuario.</div>`;
       return;
     }
-    const sft = state.sftResults.filter((item) => item.adultId === adult.id);
-    const plans = state.plans.filter((item) => item.adultId === adult.id);
     document.getElementById("content").innerHTML = `
-      <section class="grid two">
-        <article class="card">
-          <div class="section-header"><h2>${escapeHtml(fullName(adult))}</h2>${status(adult.status)}</div>
-          <p><strong>Edad:</strong> ${age(adult.birthDate)} | <strong>Genero:</strong> ${escapeHtml(adult.gender)}</p>
-          <p><strong>Contacto:</strong> ${escapeHtml(adult.phone)} | ${escapeHtml(adult.address)}</p>
-          <p><strong>Emergencia:</strong> ${escapeHtml(adult.emergencyContact)}</p>
-          <p><strong>Acceso al aplicativo:</strong> ${escapeHtml(adult.appAccess || "Sin acceso")}</p>
-          <p><strong>Consentimiento:</strong> ${status(adult.consent)}</p>
-        </article>
-        <article class="card">
-          <h2>Historial medico</h2>
-          <p><strong>Patologias:</strong> ${adult.pathologies.map(escapeHtml).join(", ") || "Sin registros"}</p>
-          <p><strong>Medicamentos:</strong> ${adult.medications.map(escapeHtml).join(", ") || "Sin registros"}</p>
-          <button class="button secondary" id="updateMedical">Actualizar historial</button>
-        </article>
-      </section>
-      <section class="grid two">
-        <article class="card"><h2>Historial SFT</h2>${sftTable(sft)}</article>
-        <article class="card"><h2>Planes asociados</h2>${plans.map(planCard).join("") || "<p class='muted'>Sin planes.</p>"}</article>
+      <section class="section">
+        <div class="section-header">
+          <div><h2>Fichas integrales</h2><span class="muted">Selecciona un adulto mayor para ver toda su informacion en detalle.</span></div>
+        </div>
+        <div class="grid three adult-card-grid">
+          ${adults.map(adultSummaryCard).join("")}
+        </div>
       </section>
     `;
-    document.getElementById("updateMedical").addEventListener("click", () => {
+    document.querySelectorAll(".adult-summary-card").forEach((card) => {
+      const open = () => openAdultDetailModal(Number(card.dataset.id));
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
+      });
+    });
+    const selected = adultById(params.get("id"));
+    if (selected && adults.some((adult) => adult.id === selected.id)) openAdultDetailModal(selected.id);
+  }
+
+  function adultSummaryCard(adult) {
+    const caregiver = state.caregivers.find((item) => item.id === adult.caregiverId);
+    const plan = state.plans.find((item) => item.adultId === adult.id);
+    return `
+      <article class="card click-card adult-summary-card" data-id="${adult.id}" tabindex="0" role="button" aria-label="Abrir ficha integral de ${escapeHtml(fullName(adult))}">
+        <div class="adult-card-photo">${personPhoto(adult.photoUrl, fullName(adult), "large")}</div>
+        <div class="section-header"><h2>${escapeHtml(fullName(adult))}</h2>${status(adult.status)}</div>
+        <p class="muted">${age(adult.birthDate)} anos | ${escapeHtml(adult.gender)} | Riesgo ${escapeHtml(adult.risk)}</p>
+        <div class="progress" aria-label="${adult.adherence}%"><span style="width:${adult.adherence}%"></span></div>
+        <div class="adult-card-meta">
+          <span><strong>${adult.adherence}%</strong> cumplimiento</span>
+          <span>${status(adult.consent)}</span>
+        </div>
+        <p><strong>Cuidador:</strong> ${escapeHtml(caregiver?.name || "Sin asignar")}</p>
+        <p><strong>Plan:</strong> ${escapeHtml(plan?.title || "Sin plan asociado")}</p>
+      </article>
+    `;
+  }
+
+  function openAdultDetailModal(adultId) {
+    const adult = adultById(adultId);
+    if (!adult) return;
+    const caregiver = state.caregivers.find((item) => item.id === adult.caregiverId);
+    const professional = state.users.find((item) => item.id === adult.professionalId);
+    const sft = state.sftResults.filter((item) => item.adultId === adult.id);
+    const plans = state.plans.filter((item) => item.adultId === adult.id);
+    const logs = state.activityLogs.filter((item) => item.adultId === adult.id);
+    document.querySelectorAll(".adult-detail-modal").forEach((node) => node.remove());
+    const modal = document.createElement("div");
+    modal.className = "modal-backdrop adult-detail-modal";
+    modal.innerHTML = `
+      <section class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="adultDetailModalTitle">
+        <div class="modal-header adult-detail-hero">
+          <div class="person-media">
+            ${personPhoto(adult.photoUrl, fullName(adult), "large")}
+            <div>
+              <h2 id="adultDetailModalTitle">${escapeHtml(fullName(adult))}</h2>
+              <span class="muted">Ficha integral dinamica | Actualizado: ${escapeHtml(adult.updatedAt)}</span>
+            </div>
+          </div>
+          <button class="button secondary modal-close" type="button">Cerrar</button>
+        </div>
+        <div class="modal-body adult-detail-body">
+          <section class="grid four">
+            ${metric("Edad", age(adult.birthDate), escapeHtml(adult.gender))}
+            ${metric("Riesgo", escapeHtml(adult.risk), "Nivel actual")}
+            ${metric("Cumplimiento", adult.adherence + "%", "Adherencia general")}
+            ${metric("Acceso", escapeHtml(adult.appAccess || "Sin acceso"), "Aplicativo")}
+          </section>
+          <section class="grid two">
+            <article class="card">
+              <h2>Datos personales</h2>
+              <p><strong>Estado:</strong> ${status(adult.status)} <strong>Consentimiento:</strong> ${status(adult.consent)}</p>
+              <p><strong>Nacimiento:</strong> ${escapeHtml(adult.birthDate)}</p>
+              <p><strong>Telefono:</strong> ${escapeHtml(adult.phone)}</p>
+              <p><strong>Direccion:</strong> ${escapeHtml(adult.address)}</p>
+              <p><strong>Emergencia:</strong> ${escapeHtml(adult.emergencyContact)}</p>
+            </article>
+            <article class="card">
+              <h2>Equipo asignado</h2>
+              <p><strong>Profesional:</strong> ${escapeHtml(professional?.name || "Sin asignar")}</p>
+              <p><strong>Cuidador:</strong> ${escapeHtml(caregiver?.name || "Sin asignar")}</p>
+              <p><strong>Contacto cuidador:</strong> ${escapeHtml(caregiver?.phone || "No registrado")}</p>
+              <p><strong>Turno:</strong> ${escapeHtml(caregiver?.shift || "No asignado")}</p>
+            </article>
+          </section>
+          <section class="grid two">
+            <article class="card">
+              <div class="section-header"><h2>Historial medico</h2><button class="button secondary" id="updateMedical" type="button">Actualizar</button></div>
+              <p><strong>Patologias:</strong> ${adult.pathologies.map(escapeHtml).join(", ") || "Sin registros"}</p>
+              <p><strong>Medicamentos:</strong> ${adult.medications.map(escapeHtml).join(", ") || "Sin registros"}</p>
+            </article>
+            <article class="card">
+              <h2>Seguimiento reciente</h2>
+              ${activityTable(logs.slice(0, 4))}
+            </article>
+          </section>
+          <section class="grid two">
+            <article class="card"><h2>Historial SFT</h2>${sftTable(sft)}</article>
+            <article class="card"><h2>Planes asociados</h2>${plans.map(planCard).join("") || "<p class='muted'>Sin planes.</p>"}</article>
+          </section>
+        </div>
+      </section>
+    `;
+    document.body.appendChild(modal);
+    modal.querySelector(".modal-close").focus();
+    const closeModal = () => {
+      document.removeEventListener("keydown", handleEscape);
+      modal.remove();
+    };
+    const handleEscape = (event) => {
+      if (event.key === "Escape") closeModal();
+    };
+    document.addEventListener("keydown", handleEscape);
+    modal.querySelectorAll(".modal-close").forEach((button) => button.addEventListener("click", closeModal));
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeModal();
+    });
+    modal.querySelector("#updateMedical").addEventListener("click", () => {
       const pathology = prompt("Agregar patologia o condicion");
       if (!pathology) return;
       adult.pathologies.push(pathology);
       adult.updatedAt = new Date().toISOString().slice(0, 10);
       addAudit(currentUser().name, "Actualizo historial medico", "medical_histories", fullName(adult) + ": " + pathology);
       saveState();
+      closeModal();
       renderAdultDetail();
+      openAdultDetailModal(adult.id);
       toast("Historial medico actualizado.");
     });
   }
 
   function renderCaregivers() {
     const canRegisterCaregiver = ["admin", "professional"].includes(currentUser().role);
+    const canOpenTechnicalFile = currentUser().role === "admin";
     document.getElementById("content").innerHTML = `
       <section class="section">
         <div class="section-header">
-          <div><h2>Cuidadores registrados</h2><span class="muted">Administradores y profesionales pueden registrar cuidadores.</span></div>
+          <div><h2>Cuidadores registrados</h2><span class="muted">${canOpenTechnicalFile ? "Selecciona una tarjeta para abrir la ficha tecnica del cuidador." : "Administradores y profesionales pueden registrar cuidadores."}</span></div>
           ${canRegisterCaregiver ? `<button class="button" id="createCaregiver">Registrar cuidador</button>` : ""}
         </div>
       </section>
       <section class="grid two">
         ${state.caregivers.map((caregiver) => `
-          <article class="card">
-            <div class="section-header"><h2>${escapeHtml(caregiver.name)}</h2>${status(caregiver.status)}</div>
-            <p class="muted">${escapeHtml(caregiver.email)} | ${escapeHtml(caregiver.phone)}</p>
+          <article class="card caregiver-card ${canOpenTechnicalFile ? "click-card" : ""}" data-id="${caregiver.id}" ${canOpenTechnicalFile ? `tabindex="0" role="button" aria-label="Abrir ficha tecnica de ${escapeHtml(caregiver.name)}"` : ""}>
+            <div class="person-media">
+              ${personPhoto(caregiver.photoUrl, caregiver.name, "large")}
+              <div>
+                <div class="section-header"><h2>${escapeHtml(caregiver.name)}</h2>${status(caregiver.status)}</div>
+                <p class="muted">${escapeHtml(caregiver.email)} | ${escapeHtml(caregiver.phone)}</p>
+              </div>
+            </div>
             <p><strong>Turno:</strong> ${escapeHtml(caregiver.shift)} | <strong>Permisos:</strong> ${escapeHtml(caregiver.permissions)}</p>
             <p><strong>Adultos asignados:</strong> ${caregiver.assignedAdults.map((id) => fullName(adultById(id))).join(", ") || "Ninguno"}</p>
+            ${canOpenTechnicalFile ? `<span class="status">Ver ficha tecnica</span>` : ""}
             <button class="button secondary transfer-caregiver" data-id="${caregiver.id}">Modificar asignaciones</button>
           </article>
         `).join("")}
@@ -674,8 +892,95 @@
     if (canRegisterCaregiver) {
       document.getElementById("createCaregiver").addEventListener("click", openCaregiverModal);
     }
+    if (canOpenTechnicalFile) {
+      document.querySelectorAll(".caregiver-card").forEach((card) => {
+        const open = () => openCaregiverTechnicalModal(Number(card.dataset.id));
+        card.addEventListener("click", open);
+        card.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            open();
+          }
+        });
+      });
+    }
     document.querySelectorAll(".transfer-caregiver").forEach((button) => {
-      button.addEventListener("click", () => toast("Flujo de transferencia listo para conectar a backend."));
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toast("Flujo de transferencia listo para conectar a backend.");
+      });
+    });
+  }
+
+  function openCaregiverTechnicalModal(caregiverId) {
+    const caregiver = state.caregivers.find((item) => item.id === caregiverId);
+    if (!caregiver) return;
+    const user = state.users.find((item) => item.id === caregiver.id);
+    const assignedAdults = caregiver.assignedAdults.map(adultById).filter(Boolean);
+    const completedLogs = state.activityLogs.filter((log) => caregiver.assignedAdults.includes(log.adultId) && log.status === "Completado").length;
+    const omittedLogs = state.activityLogs.filter((log) => caregiver.assignedAdults.includes(log.adultId) && log.status === "Omitido").length;
+    const modal = document.createElement("div");
+    modal.className = "modal-backdrop";
+    modal.innerHTML = `
+      <section class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="caregiverTechnicalTitle">
+        <div class="modal-header caregiver-detail-hero">
+          <div class="person-media">
+            ${personPhoto(caregiver.photoUrl, caregiver.name, "large")}
+            <div>
+              <h2 id="caregiverTechnicalTitle">${escapeHtml(caregiver.name)}</h2>
+              <span class="muted">Ficha tecnica del cuidador | ${escapeHtml(caregiver.email)}</span>
+            </div>
+          </div>
+          <button class="button secondary modal-close" type="button">Cerrar</button>
+        </div>
+        <div class="modal-body caregiver-detail-body">
+          <section class="grid four">
+            ${metric("Estado", escapeHtml(caregiver.status), "Acceso del usuario")}
+            ${metric("Turno", escapeHtml(caregiver.shift), "Horario operativo")}
+            ${metric("Asignados", assignedAdults.length, "Adultos mayores")}
+            ${metric("Completadas", completedLogs, "Actividades registradas")}
+          </section>
+          <section class="grid two">
+            <article class="card">
+              <h2>Datos de contacto</h2>
+              <p><strong>Telefono:</strong> ${escapeHtml(caregiver.phone)}</p>
+              <p><strong>Correo:</strong> ${escapeHtml(caregiver.email)}</p>
+              <p><strong>Direccion:</strong> ${escapeHtml(caregiver.address || "No registrada")}</p>
+              <p><strong>Emergencia:</strong> ${escapeHtml(caregiver.emergencyContact || "No registrada")}</p>
+            </article>
+            <article class="card">
+              <h2>Perfil operativo</h2>
+              <p><strong>Documento:</strong> ${escapeHtml(caregiver.documentNumber || "No registrado")}</p>
+              <p><strong>Permisos:</strong> ${escapeHtml(caregiver.permissions)}</p>
+              <p><strong>Ultimo acceso:</strong> ${escapeHtml(user?.lastLogin || "Nuevo")}</p>
+              <p><strong>Omitidas:</strong> ${omittedLogs}</p>
+            </article>
+          </section>
+          <section class="grid two">
+            <article class="card">
+              <h2>Notas</h2>
+              <p>${escapeHtml(caregiver.notes || "Sin notas registradas.")}</p>
+            </article>
+            <article class="card">
+              <h2>Adultos asignados</h2>
+              <div class="caregiver-assigned-list">
+                ${assignedAdults.map((adult) => `
+                  <div class="person-row caregiver-assigned-item">
+                    ${personPhoto(adult.photoUrl, fullName(adult))}
+                    <div><strong>${escapeHtml(fullName(adult))}</strong><br><span class="muted">${escapeHtml(adult.risk)} | ${escapeHtml(adult.adherence)}% cumplimiento</span></div>
+                  </div>
+                `).join("") || "<p class='muted'>No tiene adultos asignados.</p>"}
+              </div>
+            </article>
+          </section>
+        </div>
+      </section>
+    `;
+    document.body.appendChild(modal);
+    modal.querySelector(".modal-close").focus();
+    modal.querySelectorAll(".modal-close").forEach((button) => button.addEventListener("click", () => modal.remove()));
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) modal.remove();
     });
   }
 
@@ -705,6 +1010,7 @@
             <div class="field"><label for="caregiverName">Nombre completo</label><input id="caregiverName" required></div>
             <div class="field"><label for="caregiverEmail">Correo de acceso</label><input id="caregiverEmail" type="email" required></div>
             <div class="field"><label for="caregiverPhone">Telefono</label><input id="caregiverPhone" required></div>
+            ${photoField("caregiverPhoto", "Foto del cuidador")}
             <div class="field"><label for="caregiverDocument">Documento</label><input id="caregiverDocument" required></div>
             <div class="field">
               <label for="caregiverShift">Turno</label>
@@ -758,7 +1064,7 @@
     });
   }
 
-  function createCaregiverFromForm(modal) {
+  async function createCaregiverFromForm(modal) {
     const name = modal.querySelector("#caregiverName").value.trim();
     const email = modal.querySelector("#caregiverEmail").value.trim().toLowerCase();
     const phone = modal.querySelector("#caregiverPhone").value.trim();
@@ -774,6 +1080,7 @@
       return;
     }
     const id = Date.now();
+    const photoUrl = await readPhotoFile(modal.querySelector("#caregiverPhoto"));
     state.users.push({
       id,
       name,
@@ -781,6 +1088,7 @@
       role: "caregiver",
       status: modal.querySelector("#caregiverStatus").value,
       phone,
+      photoUrl,
       lastLogin: "Nuevo"
     });
     state.caregivers.push({
@@ -788,6 +1096,7 @@
       name,
       email,
       phone,
+      photoUrl,
       documentNumber,
       address: modal.querySelector("#caregiverAddress").value.trim(),
       emergencyContact: modal.querySelector("#caregiverEmergency").value.trim(),
@@ -857,16 +1166,20 @@
 
   function renderPlans() {
     const user = currentUser();
+    if (user.role === "caregiver") {
+      renderCaregiverDailyPlans();
+      return;
+    }
     const canManagePlans = ["admin", "professional"].includes(user.role);
     const plans = visiblePlans();
     document.getElementById("content").innerHTML = `
       <section class="section">
         <div class="section-header">
-          <div><h2>Planes personalizados</h2><span class="muted">${canManagePlans ? "Generacion IA, creacion manual por dia, revision y asignacion." : "Registra si la actividad se hizo, porcentaje cumplido y observaciones."}</span></div>
+          <div><h2>Planes personalizados</h2><span class="muted">${canManagePlans ? "El profesional asigna el plan semanal y se notifica al cuidador y al adulto mayor." : "Registra si la actividad se hizo, porcentaje cumplido y observaciones."}</span></div>
           ${canManagePlans ? `
             <div class="toolbar">
-              <button class="button" id="generatePlan">Generar con IA</button>
-              <button class="button secondary" id="manualPlan">Crear manual</button>
+              <button class="button" id="generatePlan">Generar y asignar con IA</button>
+              <button class="button secondary" id="manualPlan">Crear plan semanal</button>
             </div>
           ` : ""}
         </div>
@@ -874,10 +1187,192 @@
       </section>
     `;
     if (canManagePlans) {
-      document.getElementById("generatePlan").addEventListener("click", () => createPlan("Gemini AI"));
+      document.getElementById("generatePlan").addEventListener("click", openGeneratedPlanModal);
       document.getElementById("manualPlan").addEventListener("click", openManualPlanModal);
     }
     bindPlanActions();
+  }
+
+  function renderCaregiverDailyPlans(selectedAdultId) {
+    const adults = visibleAdults().filter((adult) => adult.status === "Activo");
+    const selectedAdult = adultById(selectedAdultId) || adults[0];
+    const day = currentPlanDay();
+    document.getElementById("content").innerHTML = `
+      <section class="caregiver-plan-shell">
+        <div class="daily-hero">
+          <div>
+            <span class="daily-kicker">Plan de hoy</span>
+            <h2>${escapeHtml(day.display)}</h2>
+            <p>Elige un adulto mayor y registra como le fue con el ejercicio del dia.</p>
+          </div>
+          <div class="daily-streak">
+            <strong>${completedTodayCount(day.dateKey)}</strong>
+            <span>hechos hoy</span>
+          </div>
+        </div>
+        <div class="daily-layout">
+          <section class="daily-adults">
+            <div class="section-header">
+              <div><h2>Adultos asignados</h2><span class="muted">Toca una tarjeta para ver el reto diario.</span></div>
+            </div>
+            <div class="daily-adult-grid">
+              ${adults.map((adult) => caregiverDailyAdultCard(adult, day.planDay, selectedAdult?.id)).join("") || `<div class="empty">No tienes adultos activos asignados.</div>`}
+            </div>
+          </section>
+          <section id="dailyExercisePanel" class="daily-panel">
+            ${selectedAdult ? dailyExercisePanel(selectedAdult, day) : ""}
+          </section>
+        </div>
+      </section>
+    `;
+    bindCaregiverDailyPlanActions(day);
+  }
+
+  function currentPlanDay() {
+    const now = new Date();
+    const days = [
+      { planDay: "Domingo", display: "Domingo" },
+      { planDay: "Lunes", display: "Lunes" },
+      { planDay: "Martes", display: "Martes" },
+      { planDay: "Miercoles", display: "Miercoles" },
+      { planDay: "Jueves", display: "Jueves" },
+      { planDay: "Viernes", display: "Viernes" },
+      { planDay: "Sabado", display: "Sabado" }
+    ];
+    return {
+      ...days[now.getDay()],
+      dateKey: now.toISOString().slice(0, 10)
+    };
+  }
+
+  function currentPlanForAdult(adultId) {
+    return state.plans
+      .filter((plan) => plan.adultId === adultId && plan.status === "Asignado")
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] || state.plans
+      .filter((plan) => plan.adultId === adultId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  }
+
+  function exerciseForDay(plan, dayName) {
+    if (!plan) return null;
+    return plan.exercises.find((exercise) => exercise.day === dayName) || null;
+  }
+
+  function completedTodayCount(dateKey) {
+    const allowedAdultIds = visibleAdults().map((adult) => adult.id);
+    return state.activityLogs.filter((log) => allowedAdultIds.includes(log.adultId) && log.date === dateKey && log.status === "Completado").length;
+  }
+
+  function caregiverDailyAdultCard(adult, dayName, selectedAdultId) {
+    const plan = currentPlanForAdult(adult.id);
+    const exercise = exerciseForDay(plan, dayName);
+    const isSelected = adult.id === selectedAdultId;
+    return `
+      <article class="daily-adult-card ${isSelected ? "selected" : ""}" data-id="${adult.id}" tabindex="0" role="button" aria-label="Seleccionar plan de ${escapeHtml(fullName(adult))}">
+        ${personPhoto(adult.photoUrl, fullName(adult), "large")}
+        <div>
+          <h3>${escapeHtml(fullName(adult))}</h3>
+          <p>${exercise ? escapeHtml(exercise.name) : "Sin ejercicio para hoy"}</p>
+          ${status(exercise?.status || "Pendiente")}
+        </div>
+      </article>
+    `;
+  }
+
+  function dailyExercisePanel(adult, day) {
+    const plan = currentPlanForAdult(adult.id);
+    const exercise = exerciseForDay(plan, day.planDay);
+    if (!plan) {
+      return `
+        <article class="daily-task-card">
+          <div class="person-media">${personPhoto(adult.photoUrl, fullName(adult), "large")}<div><h2>${escapeHtml(fullName(adult))}</h2><p class="muted">Aun no tiene plan semanal asignado.</p></div></div>
+          <div class="empty">Cuando el profesional asigne un plan, aqui aparecera el ejercicio del dia.</div>
+        </article>
+      `;
+    }
+    if (!exercise) {
+      return `
+        <article class="daily-task-card">
+          <div class="person-media">${personPhoto(adult.photoUrl, fullName(adult), "large")}<div><h2>${escapeHtml(fullName(adult))}</h2><p class="muted">${escapeHtml(plan.title)}</p></div></div>
+          <div class="daily-rest">
+            <strong>Dia sin ejercicio programado</strong>
+            <span>Hoy no hay actividad en el plan. Puedes revisar hidratacion, descanso y bienestar general.</span>
+          </div>
+        </article>
+      `;
+    }
+    return `
+      <article class="daily-task-card">
+        <div class="daily-task-head">
+          <div class="person-media">
+            ${personPhoto(adult.photoUrl, fullName(adult), "large")}
+            <div>
+              <h2>${escapeHtml(fullName(adult))}</h2>
+              <p class="muted">${escapeHtml(plan.title)} | ${escapeHtml(day.planDay)}</p>
+            </div>
+          </div>
+          ${status(exercise.status)}
+        </div>
+        <div class="daily-exercise">
+          <span class="daily-kicker">Ejercicio de hoy</span>
+          <h3>${escapeHtml(exercise.name)}</h3>
+          <p>${escapeHtml(exercise.duration)} | Intensidad ${escapeHtml(exercise.intensity)}</p>
+          <p><strong>Requiere:</strong> ${escapeHtml(exercise.requirement || "Indicaciones del profesional")}</p>
+        </div>
+        <div class="rating-row" data-plan="${plan.id}" data-day="${escapeHtml(exercise.day)}">
+          <button class="rating-button great" data-rating="100" data-status="Completado" type="button"><strong>Excelente</strong><span>Lo hizo completo</span></button>
+          <button class="rating-button ok" data-rating="70" data-status="Completado" type="button"><strong>Con ayuda</strong><span>Necesito apoyo</span></button>
+          <button class="rating-button incomplete" data-rating="40" data-status="Incompleto" type="button"><strong>Incompleto</strong><span>Lo intento parcialmente</span></button>
+          <button class="rating-button hard" data-rating="0" data-status="Omitido" type="button"><strong>No pudo</strong><span>Se omite hoy</span></button>
+        </div>
+        <label class="daily-notes">Observaciones
+          <textarea id="dailyNotes" placeholder="Dolor, fatiga, animo, apoyo requerido...">${escapeHtml(exercise.observations || "")}</textarea>
+        </label>
+      </article>
+    `;
+  }
+
+  function bindCaregiverDailyPlanActions(day) {
+    document.querySelectorAll(".daily-adult-card").forEach((card) => {
+      const select = () => renderCaregiverDailyPlans(Number(card.dataset.id));
+      card.addEventListener("click", select);
+      card.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          select();
+        }
+      });
+    });
+    document.querySelectorAll(".rating-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        const row = button.closest(".rating-row");
+        saveDailyExerciseRating(row.dataset.plan, row.dataset.day, button.dataset.status, Number(button.dataset.rating), day.dateKey);
+      });
+    });
+  }
+
+  function saveDailyExerciseRating(planId, day, statusValue, compliance, dateKey) {
+    const plan = state.plans.find((item) => item.id === Number(planId));
+    const exercise = plan?.exercises.find((item) => item.day === day);
+    if (!plan || !exercise) return;
+    exercise.status = statusValue;
+    exercise.compliance = compliance;
+    exercise.observations = document.getElementById("dailyNotes")?.value.trim() || "";
+    plan.adherence = Math.round(plan.exercises.reduce((sum, item) => sum + Number(item.compliance || 0), 0) / plan.exercises.length);
+    state.activityLogs.unshift({
+      id: Date.now(),
+      adultId: plan.adultId,
+      date: dateKey,
+      planId: plan.id,
+      exercise: exercise.name,
+      status: exercise.status,
+      minutes: exercise.status === "Completado" ? parseInt(exercise.duration, 10) || 0 : 0,
+      notes: exercise.observations || `Calificacion diaria ${exercise.compliance}%`
+    });
+    addAudit(currentUser().name, "Califico ejercicio diario", "exercise_tracking", `${fullName(adultById(plan.adultId))}: ${exercise.day} ${exercise.compliance}%`);
+    saveState();
+    renderCaregiverDailyPlans(plan.adultId);
+    toast("Calificacion del ejercicio guardada.");
   }
 
   function visiblePlans() {
@@ -885,8 +1380,47 @@
     return state.plans.filter((plan) => allowedAdultIds.includes(plan.adultId));
   }
 
-  function createPlan(source) {
-    const adult = visibleAdults()[0];
+  function openGeneratedPlanModal() {
+    const adults = visibleAdults().filter((adult) => adult.status === "Activo");
+    if (!adults.length) {
+      toast("Primero registra un adulto mayor activo.");
+      return;
+    }
+    const modal = document.createElement("div");
+    modal.className = "modal-backdrop";
+    modal.innerHTML = `
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="generatedPlanTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="generatedPlanTitle">Asignar plan semanal con IA</h2>
+            <span class="muted">Selecciona el adulto mayor. Al guardar se notificara al cuidador y al adulto mayor.</span>
+          </div>
+          <button class="button secondary modal-close" type="button">Cerrar</button>
+        </div>
+        <form class="modal-body" id="generatedPlanForm">
+          <div class="field"><label for="generatedPlanAdult">Adulto mayor</label><select id="generatedPlanAdult">${adults.map((adult) => `<option value="${adult.id}">${escapeHtml(fullName(adult))}</option>`).join("")}</select></div>
+          <div class="toolbar">
+            <button class="button" type="submit">Asignar plan semanal</button>
+            <button class="button secondary modal-close" type="button">Cancelar</button>
+          </div>
+        </form>
+      </section>
+    `;
+    document.body.appendChild(modal);
+    modal.querySelector("#generatedPlanAdult").focus();
+    modal.querySelectorAll(".modal-close").forEach((button) => button.addEventListener("click", () => modal.remove()));
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) modal.remove();
+    });
+    modal.querySelector("#generatedPlanForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      createPlan("Gemini AI", modal.querySelector("#generatedPlanAdult").value);
+      modal.remove();
+    });
+  }
+
+  function createPlan(source, adultId) {
+    const adult = adultById(adultId) || visibleAdults()[0];
     if (!adult) {
       toast("Primero registra un adulto mayor.");
       return;
@@ -896,9 +1430,9 @@
       adultId: adult.id,
       title: source === "Gemini AI" ? "Plan generado con Gemini" : "Plan manual",
       source,
-      status: "Borrador",
+      status: "Asignado",
       adherence: 0,
-      reviewedBy: "",
+      reviewedBy: currentUser().name,
       createdAt: new Date().toISOString().slice(0, 10),
       exercises: ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes"].map((day, index) => ({
         day,
@@ -912,10 +1446,11 @@
       }))
     };
     state.plans.unshift(plan);
-    addAudit(currentUser().name, "Creo plan", "exercise_plans", source + " para " + fullName(adult));
+    notifyPlanAssignment(plan, adult);
+    addAudit(currentUser().name, "Asigno plan semanal", "exercise_plans", source + " para " + fullName(adult));
     saveState();
     renderPlans();
-    toast("Plan creado con 5 ejercicios semanales.");
+    toast("Plan semanal asignado y notificaciones enviadas.");
   }
 
   function openManualPlanModal() {
@@ -928,25 +1463,37 @@
     const modal = document.createElement("div");
     modal.className = "modal-backdrop";
     modal.innerHTML = `
-      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="manualPlanTitle">
-        <div class="modal-header">
+      <section class="modal modal-wide plan-builder-modal" role="dialog" aria-modal="true" aria-labelledby="manualPlanTitle">
+        <div class="modal-header plan-builder-hero">
           <div>
-            <h2 id="manualPlanTitle">Crear plan manual</h2>
-            <span class="muted">Define que se requiere para cada dia de la semana.</span>
+            <span class="daily-kicker">Nuevo plan</span>
+            <h2 id="manualPlanTitle">Asignar plan semanal</h2>
+            <span class="muted">Construye una semana clara, segura y facil de seguir para el cuidador.</span>
           </div>
           <button class="button secondary modal-close" type="button">Cerrar</button>
         </div>
-        <form class="modal-body" id="manualPlanForm">
-          <div class="form-grid">
-            <div class="field full"><label for="manualPlanAdult">Adulto mayor</label><select id="manualPlanAdult">${adults.map((adult) => `<option value="${adult.id}">${escapeHtml(fullName(adult))}</option>`).join("")}</select></div>
-            <div class="field full"><label for="manualPlanTitleInput">Titulo del plan</label><input id="manualPlanTitleInput" value="Plan manual personalizado" required></div>
+        <form class="modal-body plan-builder-body" id="manualPlanForm">
+          <section class="plan-builder-top">
+            <div class="plan-builder-main-fields">
+              <div class="field"><label for="manualPlanAdult">Adulto mayor</label><select id="manualPlanAdult">${adults.map((adult) => `<option value="${adult.id}">${escapeHtml(fullName(adult))}</option>`).join("")}</select></div>
+              <div class="field"><label for="manualPlanTitleInput">Titulo del plan</label><input id="manualPlanTitleInput" value="Plan semanal personalizado" required></div>
+            </div>
+            <aside class="plan-builder-summary">
+              <strong>5 dias de actividad</strong>
+              <span>Se asigna inmediatamente y envia notificacion al cuidador y al adulto mayor.</span>
+            </aside>
+          </section>
+          <section class="plan-day-grid">
             ${days.map((day, index) => `
-              <div class="card full">
-                <h3>${day}</h3>
-                <div class="form-grid">
+              <article class="plan-day-editor">
+                <div class="plan-day-header">
+                  <span>${index + 1}</span>
+                  <div><h3>${day}</h3><p>Actividad principal del dia</p></div>
+                </div>
+                <div class="plan-day-fields">
                   <div class="field"><label for="manualName${index}">Actividad</label><input id="manualName${index}" required placeholder="Ej. Caminata asistida"></div>
                   <div class="field"><label for="manualDuration${index}">Duracion</label><input id="manualDuration${index}" required placeholder="Ej. 15 min"></div>
-                  <div class="field">
+                  <div class="field intensity-field">
                     <label for="manualIntensity${index}">Intensidad</label>
                     <select id="manualIntensity${index}">
                       <option>Baja</option>
@@ -954,13 +1501,13 @@
                       <option>Alta</option>
                     </select>
                   </div>
-                  <div class="field full"><label for="manualRequirement${index}">Que se requiere</label><textarea id="manualRequirement${index}" required placeholder="Materiales, apoyo, restricciones, indicaciones de seguridad"></textarea></div>
+                  <div class="field requirement-field"><label for="manualRequirement${index}">Indicaciones y seguridad</label><textarea id="manualRequirement${index}" required placeholder="Materiales, apoyo, restricciones, indicaciones de seguridad"></textarea></div>
                 </div>
-              </div>
+              </article>
             `).join("")}
-          </div>
-          <div class="toolbar">
-            <button class="button" type="submit">Guardar plan manual</button>
+          </section>
+          <div class="toolbar plan-builder-actions">
+            <button class="button" type="submit">Asignar plan semanal</button>
             <button class="button secondary modal-close" type="button">Cancelar</button>
           </div>
         </form>
@@ -986,9 +1533,9 @@
       adultId: adult.id,
       title: modal.querySelector("#manualPlanTitleInput").value.trim(),
       source: "Manual",
-      status: "Borrador",
+      status: "Asignado",
       adherence: 0,
-      reviewedBy: "",
+      reviewedBy: currentUser().name,
       createdAt: new Date().toISOString().slice(0, 10),
       exercises: days.map((day, index) => ({
         day,
@@ -1002,11 +1549,33 @@
       }))
     };
     state.plans.unshift(plan);
-    addAudit(currentUser().name, "Creo plan manual", "exercise_plans", fullName(adult));
+    notifyPlanAssignment(plan, adult);
+    addAudit(currentUser().name, "Asigno plan semanal manual", "exercise_plans", fullName(adult));
     saveState();
     modal.remove();
     renderPlans();
-    toast("Plan manual creado con requerimientos por dia.");
+    toast("Plan semanal asignado y notificaciones enviadas.");
+  }
+
+  function notifyPlanAssignment(plan, adult) {
+    const caregiver = state.caregivers.find((item) => item.id === adult.caregiverId);
+    const now = new Date().toISOString().slice(0, 16).replace("T", " ");
+    const content = `Plan semanal "${plan.title}" asignado por ${currentUser().name} para ${fullName(adult)}.`;
+    const recipients = [
+      caregiver ? caregiver.name : "",
+      fullName(adult)
+    ].filter(Boolean);
+    recipients.forEach((to, index) => {
+      state.notifications.unshift({
+        id: Date.now() + index,
+        to,
+        type: "Plan semanal",
+        status: "Enviada",
+        date: now,
+        content
+      });
+    });
+    addAudit(currentUser().name, "Envio notificacion de plan", "notifications", recipients.join(", ") || fullName(adult));
   }
 
   function planCard(plan) {
@@ -1033,7 +1602,7 @@
         ${canManagePlans ? `
           <div class="toolbar">
             <button class="button secondary review-plan" data-id="${plan.id}">Marcar revisado</button>
-            <button class="button assign-plan" data-id="${plan.id}">Asignar</button>
+            <button class="button assign-plan" data-id="${plan.id}">${plan.status === "Asignado" ? "Reenviar notificacion" : "Asignar plan semanal"}</button>
           </div>
         ` : ""}
       </article>
@@ -1070,12 +1639,17 @@
 
   function updatePlanStatus(id, newStatus) {
     const plan = state.plans.find((item) => item.id === Number(id));
+    const previousStatus = plan.status;
+    const adult = adultById(plan.adultId);
     plan.status = newStatus;
     plan.reviewedBy = currentUser().name;
+    if (newStatus === "Asignado" && adult) notifyPlanAssignment(plan, adult);
     addAudit(currentUser().name, "Cambio estado plan", "exercise_plans", plan.title + " -> " + newStatus);
     saveState();
     renderPlans();
-    toast("Plan actualizado a " + newStatus + ".");
+    toast(newStatus === "Asignado"
+      ? (previousStatus === "Asignado" ? "Notificacion del plan reenviada." : "Plan asignado y notificaciones enviadas.")
+      : "Plan actualizado a " + newStatus + ".");
   }
 
   function saveExerciseTracking(planId, day) {
